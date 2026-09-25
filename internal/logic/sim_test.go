@@ -52,7 +52,10 @@ func TestReconvergentGlitch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	res := c.simulate()
+	res, errSim := c.simulate()
+	if errSim != nil {
+		t.Fatalf("simulate: %v", errSim)
+	}
 
 	assertEdges(t, c, res, "z", []Jump{{At: 2, Value: true}, {At: 3, Value: false}})
 
@@ -103,7 +106,10 @@ func TestSameTickCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	res := c.simulate()
+	res, errSim := c.simulate()
+	if errSim != nil {
+		t.Fatalf("simulate: %v", errSim)
+	}
 	assertEdges(t, c, res, "x", nil)
 }
 
@@ -125,7 +131,10 @@ func TestEqualDelayReconvergeNoGlitch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	res := c.simulate()
+	res, errSim := c.simulate()
+	if errSim != nil {
+		t.Fatalf("simulate: %v", errSim)
+	}
 	assertEdges(t, c, res, "n1", []Jump{{At: 5, Value: false}})
 	assertEdges(t, c, res, "n2", []Jump{{At: 5, Value: false}})
 	assertEdges(t, c, res, "z", []Jump{{At: 6, Value: false}})
@@ -150,7 +159,10 @@ func TestMultiGatePropagation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	res := c.simulate()
+	res, errSim := c.simulate()
+	if errSim != nil {
+		t.Fatalf("simulate: %v", errSim)
+	}
 	// a: t1=1 t2=0。
 	// g1=!a 延迟1：t2=0、t3=1。
 	// g2=!g1：在 t2 见 g1=0 排 t5=1；在 t3 见 g1=1 排 t6=0。
@@ -177,7 +189,10 @@ func TestTransportDoesNotCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	res := c.simulate()
+	res, errSim := c.simulate()
+	if errSim != nil {
+		t.Fatalf("simulate: %v", errSim)
+	}
 	assertEdges(t, c, res, "w", []Jump{{At: 2, Value: false}, {At: 3, Value: true}})
 	resp := c.buildResponse(res)
 	if len(resp.Pulses) != 1 || resp.Pulses[0].Width != 1 || resp.Pulses[0].Value {
@@ -207,7 +222,10 @@ func TestSameValueEventIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	res := c.simulate()
+	res, errSim := c.simulate()
+	if errSim != nil {
+		t.Fatalf("simulate: %v", errSim)
+	}
 	if es := res.edges[c.idIndex["z"]]; len(es) != 0 {
 		t.Fatalf("z 应始终为 1，不应有跳变: %v", es)
 	}
@@ -230,7 +248,10 @@ func TestInitialSteadyState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	res := c.simulate()
+	res, errSim := c.simulate()
+	if errSim != nil {
+		t.Fatalf("simulate: %v", errSim)
+	}
 	if res.initV[c.idIndex["n1"]] != false || res.initV[c.idIndex["z"]] != false {
 		t.Fatalf("初始稳态错误: n1=%v z=%v", res.initV[c.idIndex["n1"]], res.initV[c.idIndex["z"]])
 	}
@@ -286,7 +307,10 @@ func crossCheck(t *testing.T, req *Request) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	got := c.simulate()
+	got, errSim := c.simulate()
+	if errSim != nil {
+		t.Fatalf("simulate: %v", errSim)
+	}
 
 	ref := refBuild(t, req)
 	ref.run()
@@ -462,7 +486,10 @@ func TestPulsesCrossCheckRandom(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		res := c.simulate()
+		res, errSim := c.simulate()
+		if errSim != nil {
+			t.Fatalf("simulate: %v", errSim)
+		}
 		// 观察全部线网。
 		req.Observe = append(req.Observe, c.names...)
 		resp := c.buildResponse(res)

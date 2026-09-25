@@ -2,6 +2,7 @@ package logic
 
 import (
 	"container/heap"
+	"math"
 	"sort"
 )
 
@@ -54,7 +55,11 @@ type simResult struct {
 //     按拓扑序依据批量生效后的稳态输入重算，并在 t+delay 排队新事件。
 //  3. 排队只追加，从不取消先前已排队的事件（纯传输延迟），
 //     因此再快的连续变化也不会抹掉前一个待发跳变，窄脉冲可穿过门传播。
-func (c *circuit) simulate() *simResult {
+//
+// 协议只支持 64 位有符号整数时刻：t+delay 一旦越过该上界就无法被精确表达。
+// 此时整次回放以 *ErrReject 拒绝——绝不返回部分结果，也绝不允许加法回绕成
+// 负时刻（否则事件堆会把下游排在上游之前，时间线单调性与脉冲宽度都会失真）。
+func (c *circuit) simulate() (*simResult, error) {
 	n := len(c.names)
 	v := c.initialState()
 
@@ -181,11 +186,19 @@ func (c *circuit) simulate() *simResult {
 		// 把输出拉走时，本事件仍能在到期时把它拉回，形成窄脉冲。
 		for _, g := range gates {
 			nv := c.evalGate(g, v)
+			// 上界检查：t 与 delay 均为正，且 delay <= 8，加法只会向上越界。
+			// 越过 64 位有符号上界的时刻无法以协议类型精确表达，整份拒绝，
+			// 避免回绕成负时刻后破坏事件因果序、时间线单调性与脉冲宽度。
+			if t > math.MaxInt-g.delay {
+				return nil, rejectf(
+					"门 %q 在时刻 %d 的输出到期时刻 %d 越过 64 位有符号时刻上界 %d，整次回放无法精确表达",
+					c.names[g.index], t, uint64(t)+uint64(g.delay), uint64(math.MaxInt))
+			}
 			schedule(t+g.delay, g.index, nv)
 		}
 	}
 
-	return res
+	return res, nil
 }
 
 // buildResponse 从全量跳变中抽取观察点时间线，并识别窄脉冲。
@@ -249,6 +262,9 @@ func Run(req *Request) (*Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	res := c.simulate()
+	res, err := c.simulate()
+	if err != nil {
+		return nil, err
+	}
 	return c.buildResponse(res), nil
 }
