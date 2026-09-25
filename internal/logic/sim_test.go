@@ -15,6 +15,15 @@ func gate(t GateType, id string, delay int, ins ...string) Gate {
 	return Gate{Type: t, ID: id, Delay: delay, Inputs: ins}
 }
 
+func mustSimulate(t *testing.T, c *circuit) *simResult {
+	t.Helper()
+	res, err := c.simulate()
+	if err != nil {
+		t.Fatalf("simulate: %v", err)
+	}
+	return res
+}
+
 // assertEdges 检查某根线网的完整跳变时间线。
 func assertEdges(t *testing.T, c *circuit, res *simResult, net string, want []Jump) {
 	t.Helper()
@@ -52,7 +61,7 @@ func TestReconvergentGlitch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	res := c.simulate()
+	res := mustSimulate(t, c)
 
 	assertEdges(t, c, res, "z", []Jump{{At: 2, Value: true}, {At: 3, Value: false}})
 
@@ -103,7 +112,7 @@ func TestSameTickCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	res := c.simulate()
+	res := mustSimulate(t, c)
 	assertEdges(t, c, res, "x", nil)
 }
 
@@ -125,7 +134,7 @@ func TestEqualDelayReconvergeNoGlitch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	res := c.simulate()
+	res := mustSimulate(t, c)
 	assertEdges(t, c, res, "n1", []Jump{{At: 5, Value: false}})
 	assertEdges(t, c, res, "n2", []Jump{{At: 5, Value: false}})
 	assertEdges(t, c, res, "z", []Jump{{At: 6, Value: false}})
@@ -150,7 +159,7 @@ func TestMultiGatePropagation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	res := c.simulate()
+	res := mustSimulate(t, c)
 	// a: t1=1 t2=0。
 	// g1=!a 延迟1：t2=0、t3=1。
 	// g2=!g1：在 t2 见 g1=0 排 t5=1；在 t3 见 g1=1 排 t6=0。
@@ -177,7 +186,7 @@ func TestTransportDoesNotCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	res := c.simulate()
+	res := mustSimulate(t, c)
 	assertEdges(t, c, res, "w", []Jump{{At: 2, Value: false}, {At: 3, Value: true}})
 	resp := c.buildResponse(res)
 	if len(resp.Pulses) != 1 || resp.Pulses[0].Width != 1 || resp.Pulses[0].Value {
@@ -207,7 +216,7 @@ func TestSameValueEventIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	res := c.simulate()
+	res := mustSimulate(t, c)
 	if es := res.edges[c.idIndex["z"]]; len(es) != 0 {
 		t.Fatalf("z 应始终为 1，不应有跳变: %v", es)
 	}
@@ -230,7 +239,7 @@ func TestInitialSteadyState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	res := c.simulate()
+	res := mustSimulate(t, c)
 	if res.initV[c.idIndex["n1"]] != false || res.initV[c.idIndex["z"]] != false {
 		t.Fatalf("初始稳态错误: n1=%v z=%v", res.initV[c.idIndex["n1"]], res.initV[c.idIndex["z"]])
 	}
@@ -278,6 +287,193 @@ func TestTimelineInitNotFinal(t *testing.T) {
 	}
 }
 
+func TestTimeOverflowRejected(t *testing.T) {
+	maxT := maxTime
+
+	runOK := func(t *testing.T, req *Request) *Response {
+		t.Helper()
+		resp, err := Run(req)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		for _, tl := range resp.Timelines {
+			if len(tl.Jumps) == 0 {
+				t.Fatalf("%s 应包含跳变", tl.Net)
+			}
+			for i := 1; i < len(tl.Jumps); i++ {
+				if tl.Jumps[i].At <= tl.Jumps[i-1].At {
+					t.Fatalf("%s 时间线非单调: %+v", tl.Net, tl.Jumps)
+				}
+			}
+		}
+		return resp
+	}
+	assertJumps := func(t *testing.T, resp *Response, want map[string][]Jump) {
+		t.Helper()
+		got := make(map[string][]Jump, len(resp.Timelines))
+		for _, tl := range resp.Timelines {
+			got[tl.Net] = tl.Jumps
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("时间线不符:\n got  %+v\n want %+v", got, want)
+		}
+	}
+	assertReject := func(t *testing.T, req *Request) {
+		t.Helper()
+		resp, err := Run(req)
+		if err == nil {
+			t.Fatalf("期望拒绝，却返回成功: %+v", resp)
+		}
+		if _, ok := err.(*ErrReject); !ok {
+			t.Fatalf("期望 *ErrReject, got %T (%v)", err, err)
+		}
+		if resp != nil {
+			t.Fatalf("拒绝时不得返回部分结果: %+v", resp)
+		}
+	}
+
+	t.Run("单门-上界内", func(t *testing.T) {
+		req := &Request{
+			Inputs:      []Input{{ID: "a", Init: false, Events: []Event{{At: maxT - 1}}}},
+			Gates:       []Gate{gate(NOT, "w", 1, "a")},
+			Observe:     []string{"a", "w"},
+			GlitchWidth: 2,
+		}
+		resp := runOK(t, req)
+		assertJumps(t, resp, map[string][]Jump{
+			"a": {{At: maxT - 1, Value: true}},
+			"w": {{At: maxT, Value: false}},
+		})
+		if len(resp.Pulses) != 0 {
+			t.Fatalf("不应有脉冲: %+v", resp.Pulses)
+		}
+	})
+
+	t.Run("单门-越过上界", func(t *testing.T) {
+		req := &Request{
+			Inputs:      []Input{{ID: "a", Init: false, Events: []Event{{At: maxT}}}},
+			Gates:       []Gate{gate(NOT, "w", 1, "a")},
+			Observe:     []string{"a", "w"},
+			GlitchWidth: 2,
+		}
+		assertReject(t, req)
+	})
+
+	t.Run("两级门-上界内保持因果次序", func(t *testing.T) {
+		req := &Request{
+			Inputs: []Input{{ID: "a", Init: false, Events: []Event{{At: maxT - 2}}}},
+			Gates: []Gate{
+				gate(NOT, "g1", 1, "a"),
+				gate(NOT, "g2", 1, "g1"),
+			},
+			Observe:     []string{"a", "g1", "g2"},
+			GlitchWidth: 2,
+		}
+		resp := runOK(t, req)
+		assertJumps(t, resp, map[string][]Jump{
+			"a":  {{At: maxT - 2, Value: true}},
+			"g1": {{At: maxT - 1, Value: false}},
+			"g2": {{At: maxT, Value: true}},
+		})
+		firstAt := map[string]int{}
+		for _, tl := range resp.Timelines {
+			firstAt[tl.Net] = tl.Jumps[0].At
+		}
+		if !(firstAt["a"] < firstAt["g1"] && firstAt["g1"] < firstAt["g2"]) {
+			t.Fatalf("因果次序错误: a=%d g1=%d g2=%d", firstAt["a"], firstAt["g1"], firstAt["g2"])
+		}
+	})
+
+	t.Run("两级门-下游越界整份拒绝", func(t *testing.T) {
+		req := &Request{
+			Inputs: []Input{{ID: "a", Init: false, Events: []Event{{At: maxT - 1}}}},
+			Gates: []Gate{
+				gate(NOT, "g1", 1, "a"),
+				gate(NOT, "g2", 1, "g1"),
+			},
+			Observe:     []string{"a", "g1", "g2"},
+			GlitchWidth: 2,
+		}
+		assertReject(t, req)
+	})
+
+	t.Run("两次翻转-上界内脉冲", func(t *testing.T) {
+		req := &Request{
+			Inputs:      []Input{{ID: "a", Init: false, Events: []Event{{At: maxT - 2}, {At: maxT - 1}}}},
+			Gates:       []Gate{gate(NOT, "w", 1, "a")},
+			Observe:     []string{"a", "w"},
+			GlitchWidth: 2,
+		}
+		resp := runOK(t, req)
+		assertJumps(t, resp, map[string][]Jump{
+			"a": {{At: maxT - 2, Value: true}, {At: maxT - 1, Value: false}},
+			"w": {{At: maxT - 1, Value: false}, {At: maxT, Value: true}},
+		})
+		wantPulses := []Pulse{{Net: "w", From: maxT - 1, To: maxT, Width: 1, Value: false}}
+		if !reflect.DeepEqual(resp.Pulses, wantPulses) {
+			t.Fatalf("脉冲不符:\n got  %+v\n want %+v", resp.Pulses, wantPulses)
+		}
+	})
+
+	t.Run("两次翻转-后一次门输出越界整份拒绝", func(t *testing.T) {
+		req := &Request{
+			Inputs:      []Input{{ID: "a", Init: false, Events: []Event{{At: maxT - 1}, {At: maxT}}}},
+			Gates:       []Gate{gate(NOT, "w", 1, "a")},
+			Observe:     []string{"a", "w"},
+			GlitchWidth: 2,
+		}
+		assertReject(t, req)
+	})
+
+	t.Run("普通时刻结果不变", func(t *testing.T) {
+		req := &Request{
+			Inputs:      []Input{{ID: "a", Init: false, Events: []Event{{At: 1}, {At: 2}}}},
+			Gates:       []Gate{gate(NOT, "w", 1, "a")},
+			Observe:     []string{"a", "w"},
+			GlitchWidth: 2,
+		}
+		resp := runOK(t, req)
+		assertJumps(t, resp, map[string][]Jump{
+			"a": {{At: 1, Value: true}, {At: 2, Value: false}},
+			"w": {{At: 2, Value: false}, {At: 3, Value: true}},
+		})
+		wantPulses := []Pulse{{Net: "w", From: 2, To: 3, Width: 1, Value: false}}
+		if !reflect.DeepEqual(resp.Pulses, wantPulses) {
+			t.Fatalf("普通时刻脉冲不符:\n got  %+v\n want %+v", resp.Pulses, wantPulses)
+		}
+	})
+}
+
+func TestTimeOverflowHTTPRejects(t *testing.T) {
+	req := &Request{
+		Inputs:      []Input{{ID: "a", Init: false, Events: []Event{{At: maxTime}}}},
+		Gates:       []Gate{gate(NOT, "w", 1, "a")},
+		Observe:     []string{"w"},
+		GlitchWidth: 2,
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(Handler())
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/simulate", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("越界请求应返回 400, got %d", resp.StatusCode)
+	}
+	var out map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out["error"] == "" {
+		t.Fatalf("错误响应缺少 error 字段: %+v", out)
+	}
+}
+
 // ---- 对拍：事件驱动引擎 vs 独立逐时刻参考模拟器 ----
 
 func crossCheck(t *testing.T, req *Request) {
@@ -286,7 +482,7 @@ func crossCheck(t *testing.T, req *Request) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	got := c.simulate()
+	got := mustSimulate(t, c)
 
 	ref := refBuild(t, req)
 	ref.run()
@@ -462,7 +658,7 @@ func TestPulsesCrossCheckRandom(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		res := c.simulate()
+		res := mustSimulate(t, c)
 		// 观察全部线网。
 		req.Observe = append(req.Observe, c.names...)
 		resp := c.buildResponse(res)

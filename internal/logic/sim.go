@@ -5,6 +5,17 @@ import (
 	"sort"
 )
 
+// maxTime 是协议可精确表达的最大有符号整数时刻。
+const maxTime = int(^uint(0) >> 1)
+
+// addDelay 返回 t+delay，并在结果无法用有符号整数时刻表示时拒绝整次回放。
+func addDelay(t, delay int, gateID string) (int, error) {
+	if t > maxTime-delay {
+		return 0, rejectf("门 %q 在时刻 %d 的输出时刻 %d+%d 超出有符号整数上界", gateID, t, t, delay)
+	}
+	return t + delay, nil
+}
+
 // eventKey 唯一标识一个待发门事件：同一线网在同一时刻至多有一个到期值。
 type eventKey struct {
 	at  int
@@ -54,7 +65,9 @@ type simResult struct {
 //     按拓扑序依据批量生效后的稳态输入重算，并在 t+delay 排队新事件。
 //  3. 排队只追加，从不取消先前已排队的事件（纯传输延迟），
 //     因此再快的连续变化也不会抹掉前一个待发跳变，窄脉冲可穿过门传播。
-func (c *circuit) simulate() *simResult {
+//
+// 任何 t+delay 无法由有符号整数时刻表示时，返回 *ErrReject，且不构造响应。
+func (c *circuit) simulate() (*simResult, error) {
 	n := len(c.names)
 	v := c.initialState()
 
@@ -181,11 +194,15 @@ func (c *circuit) simulate() *simResult {
 		// 把输出拉走时，本事件仍能在到期时把它拉回，形成窄脉冲。
 		for _, g := range gates {
 			nv := c.evalGate(g, v)
-			schedule(t+g.delay, g.index, nv)
+			at, err := addDelay(t, g.delay, c.names[g.index])
+			if err != nil {
+				return nil, err
+			}
+			schedule(at, g.index, nv)
 		}
 	}
 
-	return res
+	return res, nil
 }
 
 // buildResponse 从全量跳变中抽取观察点时间线，并识别窄脉冲。
@@ -249,6 +266,9 @@ func Run(req *Request) (*Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	res := c.simulate()
+	res, err := c.simulate()
+	if err != nil {
+		return nil, err
+	}
 	return c.buildResponse(res), nil
 }
