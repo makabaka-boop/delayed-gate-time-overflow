@@ -1,0 +1,14 @@
+{
+  "inputs": [
+    { "id": "A", "init": false, "events": [{ "at": 1 }] },
+    { "id": "B", "init": false }
+  ],
+  "gates": [
+    { "type": "NOT", "id": "nb",   "delay": 1, "inputs": ["B"] },
+    { "type": "OR",  "id": "hold", "delay": 1, "inputs": ["B", "nb"] },
+    { "type": "AND", "id": "g1",   "delay": 1, "inputs": ["A", "hold"] },
+    { "type": "XOR", "id": "z",    "delay": 1, "inputs": ["g1", "A"] }
+  ],
+  "observe": ["A", "g1", "z"],
+  "glitch_width": 3
+}

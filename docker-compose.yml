@@ -1,0 +1,17 @@
+services:
+  logic:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gateflow-logic:dev
+    container_name: gateflow-logic
+    ports:
+      - "8080:8080"
+    environment:
+      LOGIC_ADDR: ":8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 2s
+      retries: 5
+    restart: unless-stopped
